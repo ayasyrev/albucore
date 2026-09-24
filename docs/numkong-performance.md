@@ -27,6 +27,7 @@ before entering Albucore.
 | Operation | Current backend | Reason to keep the route |
 |---|---|---|
 | Global float32 `mean`, `std`, `mean_std` | NumPy | NumPy's float64 accumulators are faster or provide the required semantics on the supported matrix. |
+| Quantitative `intensity_statistic(..., "rms")` | NumPy | Float32 NumKong `norm`, `moments`, and `dot` exceed the required `rtol=1e-14` in measured cells. Float64 casting plus `dot` retains an image-sized temporary. See the [normalization audit](../benchmarks/results/benchmark_statistical_normalization.md) for the size/layout decision and complete public-path timings. |
 | `min`, `max`, and paired global min/max | NumPy | The current NumKong candidate has no stable full-path win. Re-run the benchmark if NumKong or the target CPU changes. |
 | `multiply_by_constant` | NumPy for float32, LUT for uint8 | The measured NumKong helper does not beat the production routes after allocation and saturation costs. |
 | `add_constant` | NumPy for float32, OpenCV for uint8 | Allocating `nk.scale(1, beta)` has no stable win. |

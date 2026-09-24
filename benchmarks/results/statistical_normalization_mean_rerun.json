@@ -1,0 +1,61 @@
+{
+  "shape": [
+    768,
+    1024,
+    9
+  ],
+  "profile": "selected-sparse",
+  "strides": [
+    36864,
+    -36,
+    4
+  ],
+  "reason": "Investigate the sole >15% apparent slowdown; global mean code is unchanged.",
+  "timing": {
+    "warmups": 3,
+    "rounds": 8,
+    "calls_per_round": 12,
+    "order": "alternating"
+  },
+  "versions": {
+    "numpy": "2.5.1",
+    "torch": "2.13.0+cpu",
+    "opencv": "5.0.0",
+    "numkong": "7.8.0"
+  },
+  "threads": {
+    "torch": 1,
+    "interop": 1,
+    "opencv": 1
+  },
+  "timings": {
+    "current": {
+      "median_ms": 3.073600666539278,
+      "samples_ms": [
+        3.2176275005137236,
+        3.03495091793593,
+        2.974624418129679,
+        3.5416916653048247,
+        3.009803001380836,
+        3.0049120832700282,
+        3.1122504151426256,
+        3.220406998783195
+      ],
+      "iterations": 12
+    },
+    "baseline": {
+      "median_ms": 3.1029727918697363,
+      "samples_ms": [
+        3.128443750028964,
+        3.0564159169443883,
+        3.01844533290326,
+        3.2071385018449896,
+        3.077501833710509,
+        3.2486758330681673,
+        2.966494833041603,
+        3.2751812492885315
+      ],
+      "iterations": 12
+    }
+  }
+}

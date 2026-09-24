@@ -8,6 +8,8 @@ from albucore.stats import mean
 
 __all__ = ["intensity_statistic", "normalize_by_scalar"]
 
+_RMS_EINSUM_MIN_SIZE = 4_194_304
+
 
 def intensity_statistic(
     image: np.ndarray,
@@ -24,6 +26,11 @@ def intensity_statistic(
     values = image if selection is None else image[selection]
     if statistic == "mean":
         return float(mean(values, axis="global"))
+    # Avoid the image-sized float64 square only in the measured large/C-contiguous
+    # region. The reshape is a view; strided inputs keep the square/mean path.
+    if values.size >= _RMS_EINSUM_MIN_SIZE and values.flags.c_contiguous:
+        flat = values.reshape(-1)
+        return float(np.sqrt(np.einsum("i,i->", flat, flat, dtype=np.float64) / flat.size))
     return float(np.sqrt(np.square(values, dtype=np.float64).mean(dtype=np.float64)))
 
 
@@ -44,13 +51,18 @@ def normalize_by_scalar(
     independent float32 storage, including identity operations and strided input.
     """
     offset, divisor = coefficients
-    result = image.copy()
+    result: np.ndarray
     with np.errstate(over="raise", invalid="raise", divide="raise"):
         if clamp_min is not None:
-            np.maximum(result, np.float32(clamp_min), out=result)
-        if offset != 0:
-            np.subtract(result, np.float32(offset), out=result)
-        np.divide(result, np.float32(divisor), out=result)
+            result = np.maximum(image, np.float32(clamp_min))
+            if offset != 0:
+                np.subtract(result, np.float32(offset), out=result)
+            np.divide(result, np.float32(divisor), out=result)
+        elif offset != 0:
+            result = np.subtract(image, np.float32(offset))
+            np.divide(result, np.float32(divisor), out=result)
+        else:
+            result = np.divide(image, np.float32(divisor))
     if clip_range is not None:
         np.clip(result, *clip_range, out=result)
     if support is not None:
