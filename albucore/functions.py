@@ -7,6 +7,7 @@ from albucore.elementwise import *
 from albucore.lut import apply_uint8_lut, sz_lut
 from albucore.normalize import *
 from albucore.ops_misc import *
+from albucore.statistical_normalization import intensity_statistic, normalize_by_scalar
 from albucore.stats import mean, mean_std, reduce_sum, std
 
 __all__: list[str] = [
@@ -20,6 +21,7 @@ __all__: list[str] = [
     "float32_io",
     "from_float",
     "hflip",
+    "intensity_statistic",
     "log",
     "matmul",
     "mean",
@@ -31,6 +33,7 @@ __all__: list[str] = [
     "multiply_by_constant",
     "multiply_by_vector",
     "normalize",
+    "normalize_by_scalar",
     "normalize_per_image",
     "pairwise_distances_squared",
     "power",
