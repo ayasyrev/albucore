@@ -487,11 +487,10 @@ def reduce_sum(
 
 
 def _global_mean_std_uint8(arr: ImageUInt8, eps: float) -> tuple[float, float]:
-    s_sum, s_sq = nk.moments(arr)
-    n = arr.size
-    mean = float(s_sum) / n
-    var = max(float(s_sq) / n - mean * mean, 0.0)
-    return mean, float(np.sqrt(var)) + eps
+    # NumKong's uint8 Haswell moments can overflow (NumKong #412).
+    # Physical order is irrelevant for a global reduction and avoids planar copies.
+    mean, std = cv2.meanStdDev(arr.ravel(order="K").reshape(-1, 1))
+    return float(mean[0, 0]), float(std[0, 0]) + eps
 
 
 def _global_mean_uint8_only(arr: ImageUInt8) -> float:
@@ -504,6 +503,23 @@ def _mean_std_per_channel_float64(arr: ImageType, eps: float) -> tuple[np.ndarra
     mean_values = np.asarray(np.mean(arr, axis=axes, dtype=np.float64), dtype=np.float64)
     std_values = np.asarray(np.std(arr, axis=axes, dtype=np.float64) + eps, dtype=np.float64)
     return mean_values, std_values
+
+
+def _mean_std_per_channel_uint8(arr: ImageUInt8, eps: float) -> tuple[np.ndarray, np.ndarray]:
+    """Use wide OpenCV statistics without exposing uint8 data to NumKong moments."""
+    channels = arr.shape[-1]
+    if channels > get_opencv_max_channels():
+        return _mean_std_per_channel_float64(arr, eps)
+    if not arr.flags.c_contiguous:
+        # Reducing scalar planes avoids an expensive interleaved packing copy.
+        means = np.empty(channels, dtype=np.float64)
+        stds = np.empty(channels, dtype=np.float64)
+        for channel in range(channels):
+            means[channel], stds[channel] = _global_mean_std_uint8(arr[..., channel], eps)
+        return means, stds
+    work = arr.reshape(-1, 1, channels)
+    mean, std = cv2.meanStdDev(work)
+    return mean[:, 0], std[:, 0] + eps
 
 
 def _mean_std_per_channel_float32(arr: ImageFloat32, eps: float) -> tuple[np.ndarray, np.ndarray]:
@@ -790,9 +806,11 @@ def _mean_std_per_channel(
         return _mean_std_per_channel_opencv(arr, eps)
     if axes == spatial_axes and not keepdims:
         c = arr.shape[-1]
-        if _is_uint8_image(arr) or arr.dtype == np.float16:
-            return _mean_std_per_channel_numkong(arr, eps)
-        if _is_float32_image(arr) and (arr.ndim != 3 or c == 1 or c > MAX_OPENCV_WORKING_CHANNELS):
+        if _is_uint8_image(arr):
+            return _mean_std_per_channel_uint8(arr, eps)
+        if arr.dtype == np.float16 or (
+            _is_float32_image(arr) and (arr.ndim != 3 or c == 1 or c > MAX_OPENCV_WORKING_CHANNELS)
+        ):
             return _mean_std_per_channel_numkong(arr, eps)
 
     if arr.ndim == 3 and not keepdims and axes == spatial_axes and arr.shape[-1] <= MAX_OPENCV_WORKING_CHANNELS:
@@ -890,6 +908,8 @@ def _std_per_channel(
 ) -> np.ndarray:
     spatial_axes = _per_channel_spatial_axes(arr)
     c = arr.shape[-1]
+    if _is_uint8_image(arr) and axes == spatial_axes and not keepdims:
+        return _mean_std_per_channel_uint8(arr, eps)[1]
     if _numkong_float16_hwc_stats_eligible(arr, axes, keepdims):
         return _mean_std_per_channel_numkong(arr, eps)[1]
     if (
@@ -910,11 +930,7 @@ def _std_per_channel(
     ):
         _, std = cv2.meanStdDev(arr)
         return np.asarray(std[:, 0] + eps, dtype=np.float64)
-    if (
-        axes == spatial_axes
-        and not keepdims
-        and (_is_uint8_image(arr) or _is_float32_image(arr) or arr.dtype == np.float16)
-    ):
+    if axes == spatial_axes and not keepdims and (_is_float32_image(arr) or arr.dtype == np.float16):
         _, std = _mean_std_per_channel_numkong(arr, eps)
         return std
     return np.asarray(arr.std(axis=axes, dtype=np.float64, keepdims=keepdims) + eps, dtype=np.float64)
@@ -1008,10 +1024,10 @@ def mean_std(
     """Compute population mean and standard deviation (+ eps) jointly.
 
     More efficient than calling ``mean`` and ``std`` separately when both are needed,
-    because the uint8 global path uses a single ``nk.moments`` pass.
+    because the uint8 global path uses a single ``cv2.meanStdDev`` pass.
 
     Routing:
-    - **uint8 global**: NumKong ``nk.moments`` (single pass, wide accumulator).
+    - **uint8 global**: OpenCV ``meanStdDev`` over a flattened single-channel view.
     - **float32 global**: ``np.mean`` + ``np.std`` (``dtype=float64`` for accuracy).
     - **float16 global**: fused CV16F channel statistics in measured contiguous HWC/NHWC C≤4 regions; use a wide
       NumPy fallback when cancellation dominates or the layout is unmeasured.
@@ -1019,11 +1035,13 @@ def mean_std(
       view; near-constant and non-finite inputs widen to NumPy float64.
     - **per-channel float16 HWC, C ≤ 4**: OpenCV ``meanStdDev`` after widening to float32; direct CV16F statistics
       can lose low-order precision and drop subnormals.
-    - **per-channel uint8 and float16 C > 4**: NumKong moments per channel, with a stable two-pass fallback for
-      near-constant half data.
+    - **per-channel uint8**: OpenCV ``meanStdDev`` (scalar planes for strided inputs);
+      NumPy float64 above OpenCV's encoded channel limit.
+    - **per-channel float16 C > 4**: NumKong moments per channel, with a stable two-pass fallback
+      for near-constant data.
     - **per-channel float32, ndim == 3, 2 ≤ C ≤ 4**: ``cv2.meanStdDev``.
     - **per-channel float32, C=1, C>4, or ndim>3**: one NumKong ``moments`` call per channel.
-    - **explicit axes / keepdims**: NumPy-compatible ``mean``/``std``.
+    - **other explicit axes / per-channel keepdims**: NumPy-compatible ``mean``/``std``.
 
     Alternative: ``mean`` or ``std`` if only one statistic is needed.
 
@@ -1313,18 +1331,19 @@ def std(
     """Compute population standard deviation (+ eps) over image tensor axes.
 
     Routing:
-    - **uint8 global**: NumKong ``nk.moments`` (single pass, wide accumulator).
+    - **uint8 global**: OpenCV ``meanStdDev`` over a flattened single-channel view.
     - **float16 global NumPy**: fused CV16F channel statistics in measured contiguous HWC/NHWC C≤4 regions; other
       layouts use wide NumPy accumulation.
     - **contiguous float16 Tensor global, 40,960 elements and larger**: a float32 accumulator when all values are in
       [-1, 1] and the resulting std exceeds 1e-3; otherwise a two-pass float64 Torch reduction. Non-contiguous inputs
       retain the wide NumPy route.
     - **float32 global**: ``np.std(dtype=float64)``.
-    - **per-channel uint8**: one NumKong ``moments`` call per channel.
+    - **per-channel uint8**: OpenCV ``meanStdDev`` (scalar planes for strided inputs);
+      NumPy float64 above OpenCV's encoded channel limit.
     - **per-channel float32, ndim == 3, 2 ≤ C ≤ 4**: ``cv2.meanStdDev``.
     - **per-channel float32, C=1, C>4, or ndim>3**: one NumKong ``moments`` call per channel.
     - **per-channel float16 HWC, C ≤ 4**: widen to float32 before ``cv2.meanStdDev``.
-    - **explicit axes / keepdims**: ``arr.std(dtype=float64)``.
+    - **other explicit axes / per-channel keepdims**: ``arr.std(dtype=float64)``.
 
     Alternative: ``mean_std`` if mean is also needed (avoids a redundant pass for uint8).
 

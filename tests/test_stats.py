@@ -598,7 +598,7 @@ def test_reduce_sum_overflow_and_precision(dtype: type, fill: float, expected_ac
 
 @pytest.mark.parametrize("c", [1, 2, 3, 4])
 def test_per_channel_mean_std_uint8_matches_numpy_and_opencv_reference(c: int) -> None:
-    """NumKong route should still agree with NumPy and OpenCV's per-channel values."""
+    """The uint8 route agrees with NumPy and OpenCV's per-channel values."""
     rng = np.random.default_rng(408 + c)
     arr = rng.integers(0, 256, size=(19, 21, c), dtype=np.uint8)
     axes = (0, 1)
@@ -617,29 +617,18 @@ def test_per_channel_mean_std_uint8_matches_numpy_and_opencv_reference(c: int) -
     np.testing.assert_allclose(mu_only, m_np, rtol=1e-5, atol=1e-5, equal_nan=False)
 
 
-def test_std_per_channel_uint8_hwc_uses_numkong_route(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_std_per_channel_uint8_hwc_avoids_numkong_moments(monkeypatch: pytest.MonkeyPatch) -> None:
     rng = np.random.default_rng(412)
     arr = rng.integers(0, 256, size=(19, 21, 3), dtype=np.uint8)
-    called = False
 
-    def fake_numkong(arr_arg: np.ndarray, eps_arg: float) -> tuple[np.ndarray, np.ndarray]:
-        nonlocal called
-        called = True
-        axes = tuple(range(arr_arg.ndim - 1))
-        mean_value = np.asarray(arr_arg.mean(axis=axes, dtype=np.float64), dtype=np.float64)
-        std_value = np.asarray(arr_arg.std(axis=axes, dtype=np.float64) + eps_arg, dtype=np.float64)
-        return mean_value, std_value
+    def fail_numkong(arr_arg: np.ndarray) -> tuple[float, float]:
+        raise AssertionError("uint8 per-channel std must not use NumKong moments")
 
-    def fail_mean_std_dev(arr_arg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        raise AssertionError("uint8 per-channel std should not use cv2.meanStdDev")
-
-    monkeypatch.setattr(stats_mod, "_mean_std_per_channel_numkong", fake_numkong)
-    monkeypatch.setattr(stats_mod.cv2, "meanStdDev", fail_mean_std_dev)
+    monkeypatch.setattr(stats_mod.nk, "moments", fail_numkong)
 
     out = std(arr, "per_channel")
     ref = arr.std(axis=(0, 1), dtype=np.float64) + DEFAULT_EPS
 
-    assert called
     np.testing.assert_allclose(out, ref, rtol=1e-4, atol=1e-4, equal_nan=False)
 
 
